@@ -235,7 +235,7 @@ jobs:
 
       - name: Generate changelog
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           CURRENT_TAG="v$VERSION"
           PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^${CURRENT_TAG}$" | tail -1)
@@ -247,16 +247,16 @@ jobs:
           echo "$COMMITS"
 
           CHANGELOG=""
-          if [ -n "$OPENAI_API_KEY" ] && [ -n "$COMMITS" ]; then
+          if [ -n "$DEEPSEEK_API_KEY" ] && [ -n "$COMMITS" ]; then
             PROMPT="Based on the following git commit messages, generate a concise and user-friendly changelog in markdown format. Group changes by category (e.g., Features, Bug Fixes, Improvements). Only include meaningful changes, skip trivial commits. Use clear, non-technical language where possible. Output ONLY the changelog content without any preamble.
 
           Commit messages:
           $COMMITS"
-            RESPONSE=$(curl -s https://api.openai.com/v1/responses \
+            RESPONSE=$(curl -s --max-time 300 https://api.deepseek.com/chat/completions \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $OPENAI_API_KEY" \
-              -d "$(jq -n --arg prompt "$PROMPT" '{"model": "gpt-5.4", "input": [{"role": "user", "content": $prompt}]}')")
-            CHANGELOG=$(echo "$RESPONSE" | jq -r '[.output[] | select(.type == "message") | .content[] | select(.type == "output_text") | .text] | join("\n") // empty')
+              -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+              -d "$(jq -n --arg prompt "$PROMPT" '{"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": $prompt}]}')")
+            CHANGELOG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
           fi
           if [ -z "$CHANGELOG" ]; then
             CHANGELOG=$(printf '### Changes\n\n'; echo "${COMMITS:-Various improvements and bug fixes}" | sed 's/^/- /')
