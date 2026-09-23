@@ -28,6 +28,10 @@ on:
         description: 'Version to release (e.g., 0.1.0 — no v prefix)'
         required: true
         type: string
+      publish:
+        description: 'Publish the release (off: build only, as a dry run)'
+        type: boolean
+        default: true
 
 env:
   REF: ${{ github.event.client_payload.ref || github.event.inputs.ref }}
@@ -202,6 +206,7 @@ jobs:
 
   publish:
     needs: [mac, cli]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
