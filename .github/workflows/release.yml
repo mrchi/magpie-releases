@@ -1,8 +1,9 @@
 name: Release
 
-# Builds, signs, notarises and publishes magpie. yetone/magpie is private;
-# pushing a v* tag there dispatches here, and the builds land on this repo's
-# Releases, where anyone can download them.
+# Builds, signs, notarises and publishes magpie. Pushing a v* tag on
+# yetone/magpie dispatches here, and the builds land on this repo's
+# Releases, where anyone can download them: the desktop app for macOS,
+# Windows and Linux, and the terminal-only build for every platform.
 #
 # macOS signing is optional: without MAC_CERTIFICATE_P12 the app is only
 # ad-hoc signed (still runs after right-click → Open). With it the app is
@@ -11,6 +12,10 @@ name: Release
 # Notarisation takes an App Store Connect API key (APPLE_API_KEY_P8,
 # APPLE_API_KEY_ID, APPLE_API_ISSUER) or, failing that, an Apple ID
 # (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID).
+#
+# The Windows and Linux apps are not signed. Each is launched on its own
+# platform before the release goes out: it must stay up and serve the
+# gateway.
 #
 # The source is checked out with MAGPIE_DEPLOY_KEY, a read-only deploy key
 # on yetone/magpie.
@@ -177,7 +182,8 @@ jobs:
             magpie-darwin-*.zip
           if-no-files-found: error
 
-  # The terminal-only magpie (no GUI, no cgo) cross-compiles from one runner.
+  # The terminal-only magpie (no GUI, no cgo) and the Windows app (WebView2,
+  # no cgo either) cross-compile from one runner.
   cli:
     runs-on: ubuntu-latest
 
@@ -195,17 +201,115 @@ jobs:
           go-version-file: go.mod
 
       - name: Build
-        run: make release-cli VERSION="$VERSION"
+        run: make release-cli release-windows VERSION="$VERSION"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: build-cli
-          path: dist/magpie-cli-*
+          path: |
+            dist/magpie-cli-*
+            dist/magpie-windows-*.exe
+          if-no-files-found: error
+
+  # Launch the Windows app for real: it has to come up and serve the gateway.
+  windows-check:
+    needs: cli
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: amd64
+          - os: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: build-cli
+          path: dist
+
+      - name: Launch magpie
+        shell: pwsh
+        run: |
+          $exe = "dist\magpie-windows-${{ matrix.arch }}.exe"
+          $v = (& $exe --version | Out-String).Trim()
+          Write-Output $v
+          if ($v -notlike "magpie $env:VERSION*") { throw "unexpected version: $v" }
+          $p = Start-Process -FilePath $exe -ArgumentList app -PassThru
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { throw "magpie exited with $($p.ExitCode)" }
+            try { Invoke-WebRequest http://127.0.0.1:3425/v1/models -UseBasicParsing | Out-Null; $ok = $true; break } catch {}
+          }
+          if (-not $ok) { throw "the gateway never answered" }
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { throw "magpie exited with $($p.ExitCode)" }
+          Stop-Process -Id $p.Id
+          Write-Output "magpie ran and served the gateway"
+
+  # The Linux app links GTK 3 and WebKitGTK 4.1, so each arch builds on its
+  # own runner. Ubuntu 22.04 keeps the glibc requirement low.
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout magpie source code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: yetone/magpie
+          ssh-key: ${{ secrets.MAGPIE_DEPLOY_KEY }}
+          ref: ${{ env.REF }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK and WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev xvfb dbus-x11
+
+      - name: Build
+        run: make release-linux VERSION="$VERSION"
+
+      - name: Launch magpie
+        run: |
+          BIN=dist/magpie-linux-${{ matrix.arch }}
+          $BIN --version | grep -F "magpie $VERSION"
+          export HOME=$(mktemp -d)
+          xvfb-run -a dbus-launch --exit-with-session $BIN app > $RUNNER_TEMP/magpie.log 2>&1 &
+          for i in $(seq 30); do
+            sleep 2
+            curl -fs -o /dev/null http://127.0.0.1:3425/v1/models && break
+          done
+          sleep 5
+          curl -fs -o /dev/null http://127.0.0.1:3425/v1/models || { cat $RUNNER_TEMP/magpie.log; echo "::error::magpie did not come up"; exit 1; }
+          pkill -f "$BIN" || true
+          echo "magpie ran and served the gateway"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: build-linux-${{ matrix.arch }}
+          path: dist/magpie-linux-*
           if-no-files-found: error
 
   publish:
-    needs: [mac, cli]
+    needs: [mac, cli, windows-check, linux]
     if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
@@ -271,6 +375,8 @@ jobs:
             echo
             echo "- **macOS (Apple Silicon):** \`magpie-darwin-arm64.dmg\`"
             echo "- **macOS (Intel):** \`magpie-darwin-amd64.dmg\`"
+            echo "- **Windows:** \`magpie-windows-amd64.exe\` (ARM: \`magpie-windows-arm64.exe\`)"
+            echo "- **Linux:** \`magpie-linux-amd64\` / \`magpie-linux-arm64\` (needs GTK 3 and WebKitGTK 4.1)"
             echo "- **Terminal only:** \`magpie-cli-<os>-<arch>\`"
           } > $RUNNER_TEMP/changelog.md
           cat $RUNNER_TEMP/changelog.md
