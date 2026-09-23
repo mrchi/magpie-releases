@@ -239,16 +239,18 @@ jobs:
           $v = (& $exe --version | Out-String).Trim()
           Write-Output $v
           if ($v -notlike "magpie $env:VERSION*") { throw "unexpected version: $v" }
-          $p = Start-Process -FilePath $exe -ArgumentList app -PassThru
+          $log = "$env:RUNNER_TEMP\magpie"
+          $p = Start-Process -FilePath $exe -ArgumentList app -PassThru -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.err"
+          function Fail($why) { Get-Content "$log.out", "$log.err" -ErrorAction SilentlyContinue; throw $why }
           $ok = $false
           foreach ($i in 1..30) {
             Start-Sleep -Seconds 2
-            if ($p.HasExited) { throw "magpie exited with $($p.ExitCode)" }
+            if ($p.HasExited) { Fail "magpie exited with $($p.ExitCode)" }
             try { Invoke-WebRequest http://127.0.0.1:3425/v1/models -UseBasicParsing | Out-Null; $ok = $true; break } catch {}
           }
-          if (-not $ok) { throw "the gateway never answered" }
+          if (-not $ok) { Fail "the gateway never answered" }
           Start-Sleep -Seconds 5
-          if ($p.HasExited) { throw "magpie exited with $($p.ExitCode)" }
+          if ($p.HasExited) { Fail "magpie exited with $($p.ExitCode)" }
           Stop-Process -Id $p.Id
           Write-Output "magpie ran and served the gateway"
 
