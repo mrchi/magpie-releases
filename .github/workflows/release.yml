@@ -267,6 +267,8 @@ jobs:
             echo
             echo "### Install"
             echo
+            echo "Download from [usemagpie.ai](https://usemagpie.ai), or \`curl -fsSL https://usemagpie.ai/install.sh | sh\`. An installed magpie updates itself."
+            echo
             echo "- **macOS (Apple Silicon):** \`magpie-darwin-arm64.dmg\`"
             echo "- **macOS (Intel):** \`magpie-darwin-amd64.dmg\`"
             echo "- **Terminal only:** \`magpie-cli-<os>-<arch>\`"
